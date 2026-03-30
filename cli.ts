@@ -58,6 +58,7 @@ switch (cmd) {
           Array<{
             id: string;
             pid: number;
+            display_name: string;
             cwd: string;
             git_root: string | null;
             tty: string | null;
@@ -72,7 +73,7 @@ switch (cmd) {
 
         console.log("\nPeers:");
         for (const p of peers) {
-          console.log(`  ${p.id}  PID:${p.pid}  ${p.cwd}`);
+          console.log(`  ${p.id}  Name:${p.display_name || "(unnamed)"}  PID:${p.pid}  ${p.cwd}`);
           if (p.summary) console.log(`         ${p.summary}`);
           if (p.tty) console.log(`         TTY: ${p.tty}`);
           console.log(`         Last seen: ${p.last_seen}`);
@@ -90,6 +91,7 @@ switch (cmd) {
         Array<{
           id: string;
           pid: number;
+          display_name: string;
           cwd: string;
           git_root: string | null;
           tty: string | null;
@@ -106,7 +108,7 @@ switch (cmd) {
         console.log("No peers registered.");
       } else {
         for (const p of peers) {
-          const parts = [`${p.id}  PID:${p.pid}  ${p.cwd}`];
+          const parts = [`${p.id}  Name:${p.display_name || "(unnamed)"}  PID:${p.pid}  ${p.cwd}`];
           if (p.summary) parts.push(`  Summary: ${p.summary}`);
           console.log(parts.join("\n"));
         }

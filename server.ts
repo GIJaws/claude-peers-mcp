@@ -44,6 +44,7 @@ const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 const BUN_BIN = process.execPath || "bun";
+const INITIAL_DISPLAY_NAME = (process.env.CLAUDE_PEERS_NAME ?? "").trim();
 
 // --- Broker communication ---
 
@@ -150,6 +151,14 @@ function getTty(): string | null {
 let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
+let myDisplayName = INITIAL_DISPLAY_NAME;
+
+function defaultNameFromCwd(cwd: string): string {
+  const clean = cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
+  const idx = clean.lastIndexOf("/");
+  const base = idx >= 0 ? clean.slice(idx + 1) : clean;
+  return base || "peer";
+}
 
 // --- MCP Server ---
 
@@ -164,11 +173,12 @@ const mcp = new Server(
 
 IMPORTANT: When you receive a <channel source="claude-peers" ...> message, RESPOND IMMEDIATELY. Do not wait until your current task is finished. Pause what you are doing, reply to the message using send_message, then resume your work. Treat incoming peer messages like a coworker tapping you on the shoulder — answer right away, even if you're in the middle of something.
 
-Read the from_id, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
+Read the from_id, from_name, from_summary, and from_cwd attributes to understand who sent the message. Reply by calling send_message with their from_id.
 
 Available tools:
 - list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
 - send_message: Send a message to another instance by ID
+- set_name: Set a short display name so humans can recognize this peer quickly
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
 
@@ -213,6 +223,21 @@ const TOOLS = [
         },
       },
       required: ["to_id", "message"],
+    },
+  },
+  {
+    name: "set_name",
+    description:
+      "Set a short display name (for example: 'desktop-main' or 'album-worker') so this peer is easier to identify in list_peers output.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string" as const,
+          description: "Display name for this peer (1-64 chars). Use empty string to clear.",
+        },
+      },
+      required: ["name"],
     },
   },
   {
@@ -275,6 +300,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const lines = peers.map((p) => {
           const parts = [
             `ID: ${p.id}`,
+            `Name: ${p.display_name || "(unnamed)"}`,
             `PID: ${p.pid}`,
             `CWD: ${p.cwd}`,
           ];
@@ -368,6 +394,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case "set_name": {
+      const { name } = args as { name: string };
+      if (!myId) {
+        return {
+          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          isError: true,
+        };
+      }
+      try {
+        await brokerFetch("/set-name", { id: myId, name });
+        myDisplayName = name;
+        return {
+          content: [{ type: "text" as const, text: `Display name updated: "${name || "(unnamed)"}"` }],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error setting name: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
     case "check_messages": {
       if (!myId) {
         return {
@@ -422,6 +475,7 @@ async function pollAndPushMessages() {
     for (const msg of result.messages) {
       // Look up the sender's info for context
       let fromSummary = "";
+      let fromName = "";
       let fromCwd = "";
       try {
         const peers = await brokerFetch<Peer[]>("/list-peers", {
@@ -431,6 +485,7 @@ async function pollAndPushMessages() {
         });
         const sender = peers.find((p) => p.id === msg.from_id);
         if (sender) {
+          fromName = sender.display_name;
           fromSummary = sender.summary;
           fromCwd = sender.cwd;
         }
@@ -445,6 +500,7 @@ async function pollAndPushMessages() {
           content: msg.text,
           meta: {
             from_id: msg.from_id,
+            from_name: fromName,
             from_summary: fromSummary,
             from_cwd: fromCwd,
             sent_at: msg.sent_at,
@@ -469,9 +525,13 @@ async function main() {
   // 2. Gather context
   myCwd = process.cwd();
   myGitRoot = await getGitRoot(myCwd);
+  if (!myDisplayName) {
+    myDisplayName = defaultNameFromCwd(myCwd);
+  }
   const tty = getTty();
 
   log(`CWD: ${myCwd}`);
+  log(`Display name: ${myDisplayName || "(unnamed)"}`);
   log(`Git root: ${myGitRoot ?? "(none)"}`);
   log(`TTY: ${tty ?? "(unknown)"}`);
   log(`Auto-summary: ${ENABLE_AUTOSUMMARY ? "enabled" : "disabled"}`);
@@ -507,6 +567,7 @@ async function main() {
   // 4. Register with broker
   const reg = await brokerFetch<RegisterResponse>("/register", {
     pid: process.pid,
+    display_name: myDisplayName,
     cwd: myCwd,
     git_root: myGitRoot,
     tty,

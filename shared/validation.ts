@@ -5,6 +5,7 @@ export const MAX_PATH_CHARS = 4096;
 export const MAX_TTY_CHARS = 64;
 export const MAX_SUMMARY_CHARS = 280;
 export const MAX_MESSAGE_CHARS = 2000;
+export const MAX_NAME_CHARS = 64;
 
 export class ValidationError extends Error {
   readonly status: number;

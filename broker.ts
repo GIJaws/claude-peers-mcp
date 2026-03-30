@@ -14,6 +14,7 @@ import type {
   RegisterRequest,
   RegisterResponse,
   HeartbeatRequest,
+  SetNameRequest,
   SetSummaryRequest,
   ListPeersRequest,
   SendMessageRequest,
@@ -28,6 +29,7 @@ import {
   MAX_TTY_CHARS,
   MAX_SUMMARY_CHARS,
   MAX_MESSAGE_CHARS,
+  MAX_NAME_CHARS,
   isRecord,
   requirePeerId,
   requirePositiveInt,
@@ -68,6 +70,7 @@ db.run(`
   CREATE TABLE IF NOT EXISTS peers (
     id TEXT PRIMARY KEY,
     pid INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
     cwd TEXT NOT NULL,
     git_root TEXT,
     tty TEXT,
@@ -76,6 +79,13 @@ db.run(`
     last_seen TEXT NOT NULL
   )
 `);
+
+// Backward compatibility for older databases created before display_name existed.
+try {
+  db.run("ALTER TABLE peers ADD COLUMN display_name TEXT NOT NULL DEFAULT ''");
+} catch {
+  // already exists
+}
 
 db.run(`
   CREATE TABLE IF NOT EXISTS messages (
@@ -132,8 +142,8 @@ setInterval(pruneMessages, 5 * 60_000);
 // --- Prepared statements ---
 
 const insertPeer = db.prepare(`
-  INSERT INTO peers (id, pid, cwd, git_root, tty, summary, registered_at, last_seen)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO peers (id, pid, display_name, cwd, git_root, tty, summary, registered_at, last_seen)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateLastSeen = db.prepare(`
@@ -142,6 +152,10 @@ const updateLastSeen = db.prepare(`
 
 const updateSummary = db.prepare(`
   UPDATE peers SET summary = ? WHERE id = ?
+`);
+
+const updateDisplayName = db.prepare(`
+  UPDATE peers SET display_name = ? WHERE id = ?
 `);
 
 const deletePeer = db.prepare(`
@@ -210,11 +224,28 @@ function parseRegisterRequest(body: unknown): RegisterRequest {
   }
   return {
     pid: requirePositiveInt(body.pid, "pid"),
+    display_name: requireString(body.display_name ?? "", "display_name", {
+      max: MAX_NAME_CHARS,
+      allowEmpty: true,
+    }),
     cwd: requireString(body.cwd, "cwd", { max: MAX_PATH_CHARS }),
     git_root: requireOptionalString(body.git_root, "git_root", { max: MAX_PATH_CHARS }),
     tty: requireOptionalString(body.tty, "tty", { max: MAX_TTY_CHARS }),
     summary: requireString(body.summary, "summary", {
       max: MAX_SUMMARY_CHARS,
+      allowEmpty: true,
+    }),
+  };
+}
+
+function parseSetNameRequest(body: unknown): SetNameRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return {
+    id: requirePeerId(body.id, "id"),
+    name: requireString(body.name, "name", {
+      max: MAX_NAME_CHARS,
       allowEmpty: true,
     }),
   };
@@ -291,7 +322,17 @@ function handleRegister(body: RegisterRequest): RegisterResponse {
     deletePeer.run(existing.id);
   }
 
-  insertPeer.run(id, body.pid, body.cwd, body.git_root, body.tty, body.summary, now, now);
+  insertPeer.run(
+    id,
+    body.pid,
+    body.display_name,
+    body.cwd,
+    body.git_root,
+    body.tty,
+    body.summary,
+    now,
+    now
+  );
   return { id };
 }
 
@@ -301,6 +342,10 @@ function handleHeartbeat(body: HeartbeatRequest): void {
 
 function handleSetSummary(body: SetSummaryRequest): void {
   updateSummary.run(body.summary, body.id);
+}
+
+function handleSetName(body: SetNameRequest): void {
+  updateDisplayName.run(body.name, body.id);
 }
 
 function handleListPeers(body: ListPeersRequest): Peer[] {
@@ -424,6 +469,9 @@ Bun.serve({
           return Response.json({ ok: true });
         case "/set-summary":
           handleSetSummary(parseSetSummaryRequest(body));
+          return Response.json({ ok: true });
+        case "/set-name":
+          handleSetName(parseSetNameRequest(body));
           return Response.json({ ok: true });
         case "/list-peers":
           return Response.json(handleListPeers(parseListPeersRequest(body)));

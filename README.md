@@ -59,7 +59,7 @@ In another terminal, start Claude Code the same way. Then ask either one:
 
 > List all peers on this machine
 
-It'll show every running instance with their working directory, git repo, and a summary of what they're doing. Then:
+It'll show every running instance with their name, working directory, git repo, and a summary of what they're doing. Then:
 
 > Send a message to peer [id]: "what are you working on?"
 
@@ -71,6 +71,7 @@ The other Claude receives it immediately and responds.
 | ---------------- | ------------------------------------------------------------------------------ |
 | `list_peers`     | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo` |
 | `send_message`   | Send a message to another instance by ID (arrives instantly via channel push)  |
+| `set_name`       | Set a short display name so peers are easy to identify                         |
 | `set_summary`    | Describe what you're working on (visible to other peers)                       |
 | `check_messages` | Manually check for messages (fallback if not using channel mode)               |
 
@@ -120,6 +121,7 @@ bun cli.ts kill-broker       # stop the broker
 | `CLAUDE_PEERS_PORT`  | `7899`               | Broker port                           |
 | `CLAUDE_PEERS_DB`    | `~/.claude-peers.db` | SQLite database path                  |
 | `CLAUDE_PEERS_TOKEN` | — (required)         | Shared auth token for broker requests |
+| `CLAUDE_PEERS_NAME` | basename of current working directory | Optional initial display name for this peer |
 | `CLAUDE_PEERS_MAX_UNDELIVERED_PER_PEER` | `200` | Queue cap per target peer |
 | `CLAUDE_PEERS_DELIVERED_RETENTION_HOURS` | `72` | Retention window for delivered messages |
 | `CLAUDE_PEERS_STALE_UNDELIVERED_RETENTION_HOURS` | `168` | Retention window for stale undelivered messages |

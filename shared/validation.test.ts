@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  MAX_NAME_CHARS,
   MAX_MESSAGE_CHARS,
   ValidationError,
   isValidPeerId,
@@ -28,6 +29,9 @@ describe("validation", () => {
 
   test("validates bounded strings", () => {
     expect(requireString("ok", "summary", { max: 10, allowEmpty: true })).toBe("ok");
+    expect(requireString("x".repeat(MAX_NAME_CHARS), "name", { max: MAX_NAME_CHARS })).toHaveLength(
+      MAX_NAME_CHARS
+    );
     expect(() =>
       requireString("x".repeat(MAX_MESSAGE_CHARS + 1), "text", { max: MAX_MESSAGE_CHARS })
     ).toThrow(ValidationError);
