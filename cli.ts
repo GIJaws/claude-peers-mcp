@@ -7,18 +7,30 @@
  * Usage:
  *   bun cli.ts status          — Show broker status and all peers
  *   bun cli.ts peers           — List all peers
- *   bun cli.ts send <id> <msg> — Send a message to a peer
+ *   bun cli.ts send <from-id> <to-id> <msg> — Send a message to a peer
  *   bun cli.ts kill-broker     — Stop the broker daemon
  */
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
+import {
+  MAX_MESSAGE_CHARS,
+  isValidPeerId,
+  parsePositiveIntEnv,
+  parseRequiredToken,
+} from "./shared/validation.ts";
+
+const BROKER_PORT = parsePositiveIntEnv(process.env.CLAUDE_PEERS_PORT, 7899, "CLAUDE_PEERS_PORT");
 const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_TOKEN = parseRequiredToken(process.env.CLAUDE_PEERS_TOKEN);
+const AUTH_HEADER = "x-claude-peers-token";
 
 async function brokerFetch<T>(path: string, body?: unknown): Promise<T> {
   const opts: RequestInit = body
     ? {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          [AUTH_HEADER]: BROKER_TOKEN,
+        },
         body: JSON.stringify(body),
       }
     : {};
@@ -106,15 +118,24 @@ switch (cmd) {
   }
 
   case "send": {
-    const toId = process.argv[3];
-    const msg = process.argv.slice(4).join(" ");
-    if (!toId || !msg) {
-      console.error("Usage: bun cli.ts send <peer-id> <message>");
+    const fromId = process.argv[3];
+    const toId = process.argv[4];
+    const msg = process.argv.slice(5).join(" ");
+    if (!fromId || !toId || !msg) {
+      console.error("Usage: bun cli.ts send <from-peer-id> <to-peer-id> <message>");
+      process.exit(1);
+    }
+    if (!isValidPeerId(fromId) || !isValidPeerId(toId)) {
+      console.error("Error: peer IDs must be 8-character lowercase alphanumeric values.");
+      process.exit(1);
+    }
+    if (msg.length > MAX_MESSAGE_CHARS) {
+      console.error(`Error: message must be <= ${MAX_MESSAGE_CHARS} characters.`);
       process.exit(1);
     }
     try {
       const result = await brokerFetch<{ ok: boolean; error?: string }>("/send-message", {
-        from_id: "cli",
+        from_id: fromId,
         to_id: toId,
         text: msg,
       });
@@ -156,6 +177,6 @@ switch (cmd) {
 Usage:
   bun cli.ts status          Show broker status and all peers
   bun cli.ts peers           List all peers
-  bun cli.ts send <id> <msg> Send a message to a peer
+  bun cli.ts send <from-id> <to-id> <msg> Send a message to a peer
   bun cli.ts kill-broker     Stop the broker daemon`);
 }

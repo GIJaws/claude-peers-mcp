@@ -31,11 +31,15 @@ import {
   getGitBranch,
   getRecentFiles,
 } from "./shared/summarize.ts";
+import { parseRequiredToken, parsePositiveIntEnv } from "./shared/validation.ts";
 
 // --- Configuration ---
 
-const BROKER_PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
+const BROKER_PORT = parsePositiveIntEnv(process.env.CLAUDE_PEERS_PORT, 7899, "CLAUDE_PEERS_PORT");
 const BROKER_URL = `http://127.0.0.1:${BROKER_PORT}`;
+const BROKER_TOKEN = parseRequiredToken(process.env.CLAUDE_PEERS_TOKEN);
+const AUTH_HEADER = "x-claude-peers-token";
+const ENABLE_AUTOSUMMARY = process.env.CLAUDE_PEERS_ENABLE_AUTOSUMMARY === "1";
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
@@ -45,7 +49,10 @@ const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
 async function brokerFetch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BROKER_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      [AUTH_HEADER]: BROKER_TOKEN,
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -72,6 +79,10 @@ async function ensureBroker(): Promise<void> {
 
   log("Starting broker daemon...");
   const proc = Bun.spawn(["bun", BROKER_SCRIPT], {
+    env: {
+      ...process.env,
+      CLAUDE_PEERS_TOKEN: BROKER_TOKEN,
+    },
     stdio: ["ignore", "ignore", "inherit"],
     // Detach so the broker survives if this MCP server exits
     // On macOS/Linux, the broker will keep running
@@ -462,30 +473,35 @@ async function main() {
   log(`CWD: ${myCwd}`);
   log(`Git root: ${myGitRoot ?? "(none)"}`);
   log(`TTY: ${tty ?? "(unknown)"}`);
+  log(`Auto-summary: ${ENABLE_AUTOSUMMARY ? "enabled" : "disabled"}`);
 
-  // 3. Generate initial summary via gpt-5.4-nano (non-blocking, best-effort)
+  // 3. Optionally generate initial summary via gpt-5.4-nano (non-blocking, best-effort)
   let initialSummary = "";
-  const summaryPromise = (async () => {
-    try {
-      const branch = await getGitBranch(myCwd);
-      const recentFiles = await getRecentFiles(myCwd);
-      const summary = await generateSummary({
-        cwd: myCwd,
-        git_root: myGitRoot,
-        git_branch: branch,
-        recent_files: recentFiles,
-      });
-      if (summary) {
-        initialSummary = summary;
-        log(`Auto-summary: ${summary}`);
-      }
-    } catch (e) {
-      log(`Auto-summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
-    }
-  })();
+  const summaryPromise = ENABLE_AUTOSUMMARY
+    ? (async () => {
+        try {
+          const branch = await getGitBranch(myCwd);
+          const recentFiles = await getRecentFiles(myCwd);
+          const summary = await generateSummary({
+            cwd: myCwd,
+            git_root: myGitRoot,
+            git_branch: branch,
+            recent_files: recentFiles,
+          });
+          if (summary) {
+            initialSummary = summary;
+            log(`Auto-summary: ${summary}`);
+          }
+        } catch (e) {
+          log(`Auto-summary failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+        }
+      })()
+    : Promise.resolve();
 
-  // Wait briefly for summary, but don't block startup
-  await Promise.race([summaryPromise, new Promise((r) => setTimeout(r, 3000))]);
+  if (ENABLE_AUTOSUMMARY) {
+    // Wait briefly for summary, but don't block startup
+    await Promise.race([summaryPromise, new Promise((r) => setTimeout(r, 3000))]);
+  }
 
   // 4. Register with broker
   const reg = await brokerFetch<RegisterResponse>("/register", {

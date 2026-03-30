@@ -22,9 +22,41 @@ import type {
   Peer,
   Message,
 } from "./shared/types.ts";
+import {
+  ValidationError,
+  MAX_PATH_CHARS,
+  MAX_TTY_CHARS,
+  MAX_SUMMARY_CHARS,
+  MAX_MESSAGE_CHARS,
+  isRecord,
+  requirePeerId,
+  requirePositiveInt,
+  requireScope,
+  requireString,
+  requireOptionalString,
+  parseRequiredToken,
+  parsePositiveIntEnv,
+} from "./shared/validation.ts";
 
-const PORT = parseInt(process.env.CLAUDE_PEERS_PORT ?? "7899", 10);
+const PORT = parsePositiveIntEnv(process.env.CLAUDE_PEERS_PORT, 7899, "CLAUDE_PEERS_PORT");
 const DB_PATH = process.env.CLAUDE_PEERS_DB ?? `${process.env.HOME}/.claude-peers.db`;
+const AUTH_HEADER = "x-claude-peers-token";
+const AUTH_TOKEN = parseRequiredToken(process.env.CLAUDE_PEERS_TOKEN);
+const MAX_UNDELIVERED_PER_PEER = parsePositiveIntEnv(
+  process.env.CLAUDE_PEERS_MAX_UNDELIVERED_PER_PEER,
+  200,
+  "CLAUDE_PEERS_MAX_UNDELIVERED_PER_PEER"
+);
+const DELIVERED_RETENTION_HOURS = parsePositiveIntEnv(
+  process.env.CLAUDE_PEERS_DELIVERED_RETENTION_HOURS,
+  72,
+  "CLAUDE_PEERS_DELIVERED_RETENTION_HOURS"
+);
+const STALE_UNDELIVERED_RETENTION_HOURS = parsePositiveIntEnv(
+  process.env.CLAUDE_PEERS_STALE_UNDELIVERED_RETENTION_HOURS,
+  168,
+  "CLAUDE_PEERS_STALE_UNDELIVERED_RETENTION_HOURS"
+);
 
 // --- Database setup ---
 
@@ -58,6 +90,11 @@ db.run(`
   )
 `);
 
+db.run(`
+  CREATE INDEX IF NOT EXISTS idx_messages_to_delivered_sent
+  ON messages (to_id, delivered, sent_at)
+`);
+
 // Clean up stale peers (PIDs that no longer exist) on startup
 function cleanStalePeers() {
   const peers = db.query("SELECT id, pid FROM peers").all() as { id: string; pid: number }[];
@@ -73,10 +110,24 @@ function cleanStalePeers() {
   }
 }
 
+function pruneMessages() {
+  const deliveredCutoff = new Date(
+    Date.now() - DELIVERED_RETENTION_HOURS * 60 * 60 * 1000
+  ).toISOString();
+  const staleUndeliveredCutoff = new Date(
+    Date.now() - STALE_UNDELIVERED_RETENTION_HOURS * 60 * 60 * 1000
+  ).toISOString();
+
+  db.run("DELETE FROM messages WHERE delivered = 1 AND sent_at < ?", [deliveredCutoff]);
+  db.run("DELETE FROM messages WHERE delivered = 0 AND sent_at < ?", [staleUndeliveredCutoff]);
+}
+
 cleanStalePeers();
+pruneMessages();
 
 // Periodically clean stale peers (every 30s)
 setInterval(cleanStalePeers, 30_000);
+setInterval(pruneMessages, 5 * 60_000);
 
 // --- Prepared statements ---
 
@@ -109,9 +160,27 @@ const selectPeersByGitRoot = db.prepare(`
   SELECT * FROM peers WHERE git_root = ?
 `);
 
+const selectPeerById = db.prepare(`
+  SELECT id FROM peers WHERE id = ?
+`);
+
 const insertMessage = db.prepare(`
   INSERT INTO messages (from_id, to_id, text, sent_at, delivered)
   VALUES (?, ?, ?, ?, 0)
+`);
+
+const countUndeliveredForPeer = db.prepare(`
+  SELECT COUNT(*) AS count FROM messages WHERE to_id = ? AND delivered = 0
+`);
+
+const deleteOldestUndeliveredForPeer = db.prepare(`
+  DELETE FROM messages WHERE id IN (
+    SELECT id
+    FROM messages
+    WHERE to_id = ? AND delivered = 0
+    ORDER BY sent_at ASC
+    LIMIT ?
+  )
 `);
 
 const selectUndelivered = db.prepare(`
@@ -134,6 +203,83 @@ function generateId(): string {
 }
 
 // --- Request handlers ---
+
+function parseRegisterRequest(body: unknown): RegisterRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return {
+    pid: requirePositiveInt(body.pid, "pid"),
+    cwd: requireString(body.cwd, "cwd", { max: MAX_PATH_CHARS }),
+    git_root: requireOptionalString(body.git_root, "git_root", { max: MAX_PATH_CHARS }),
+    tty: requireOptionalString(body.tty, "tty", { max: MAX_TTY_CHARS }),
+    summary: requireString(body.summary, "summary", {
+      max: MAX_SUMMARY_CHARS,
+      allowEmpty: true,
+    }),
+  };
+}
+
+function parseHeartbeatRequest(body: unknown): HeartbeatRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return { id: requirePeerId(body.id, "id") };
+}
+
+function parseSetSummaryRequest(body: unknown): SetSummaryRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return {
+    id: requirePeerId(body.id, "id"),
+    summary: requireString(body.summary, "summary", {
+      max: MAX_SUMMARY_CHARS,
+      allowEmpty: true,
+    }),
+  };
+}
+
+function parseListPeersRequest(body: unknown): ListPeersRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  const exclude = body.exclude_id;
+  if (exclude !== undefined && exclude !== null) {
+    requirePeerId(exclude, "exclude_id");
+  }
+  return {
+    scope: requireScope(body.scope),
+    cwd: requireString(body.cwd, "cwd", { max: MAX_PATH_CHARS }),
+    git_root: requireOptionalString(body.git_root, "git_root", { max: MAX_PATH_CHARS }),
+    exclude_id: (exclude ?? undefined) as string | undefined,
+  };
+}
+
+function parseSendMessageRequest(body: unknown): SendMessageRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return {
+    from_id: requirePeerId(body.from_id, "from_id"),
+    to_id: requirePeerId(body.to_id, "to_id"),
+    text: requireString(body.text, "text", { max: MAX_MESSAGE_CHARS }),
+  };
+}
+
+function parsePollMessagesRequest(body: unknown): PollMessagesRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return { id: requirePeerId(body.id, "id") };
+}
+
+function parseUnregisterRequest(body: unknown): { id: string } {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  return { id: requirePeerId(body.id, "id") };
+}
 
 function handleRegister(body: RegisterRequest): RegisterResponse {
   const id = generateId();
@@ -198,10 +344,24 @@ function handleListPeers(body: ListPeersRequest): Peer[] {
 }
 
 function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: string } {
+  // Verify sender exists to prevent spoofed messages from arbitrary local processes
+  const sender = selectPeerById.get(body.from_id) as { id: string } | null;
+  if (!sender) {
+    return { ok: false, error: `Sender ${body.from_id} is not a registered peer` };
+  }
+
   // Verify target exists
-  const target = db.query("SELECT id FROM peers WHERE id = ?").get(body.to_id) as { id: string } | null;
+  const target = selectPeerById.get(body.to_id) as { id: string } | null;
   if (!target) {
     return { ok: false, error: `Peer ${body.to_id} not found` };
+  }
+
+  // Keep queue bounded so a noisy sender cannot grow the database indefinitely.
+  const countResult = countUndeliveredForPeer.get(body.to_id) as { count: number } | null;
+  const undeliveredCount = countResult?.count ?? 0;
+  if (undeliveredCount >= MAX_UNDELIVERED_PER_PEER) {
+    const overBy = undeliveredCount - MAX_UNDELIVERED_PER_PEER + 1;
+    deleteOldestUndeliveredForPeer.run(body.to_id, overBy);
   }
 
   insertMessage.run(body.from_id, body.to_id, body.text, new Date().toISOString());
@@ -240,34 +400,53 @@ Bun.serve({
     }
 
     try {
+      const isHealthPath = path === "/health";
+      const presentedToken = req.headers.get(AUTH_HEADER);
+      if (!isHealthPath && presentedToken !== AUTH_TOKEN) {
+        return Response.json(
+          { error: `Unauthorized. Expected header ${AUTH_HEADER}.` },
+          { status: 401 }
+        );
+      }
+
+      const contentType = req.headers.get("content-type")?.toLowerCase() ?? "";
+      if (!contentType.includes("application/json")) {
+        return Response.json({ error: "Content-Type must be application/json" }, { status: 415 });
+      }
+
       const body = await req.json();
 
       switch (path) {
         case "/register":
-          return Response.json(handleRegister(body as RegisterRequest));
+          return Response.json(handleRegister(parseRegisterRequest(body)));
         case "/heartbeat":
-          handleHeartbeat(body as HeartbeatRequest);
+          handleHeartbeat(parseHeartbeatRequest(body));
           return Response.json({ ok: true });
         case "/set-summary":
-          handleSetSummary(body as SetSummaryRequest);
+          handleSetSummary(parseSetSummaryRequest(body));
           return Response.json({ ok: true });
         case "/list-peers":
-          return Response.json(handleListPeers(body as ListPeersRequest));
+          return Response.json(handleListPeers(parseListPeersRequest(body)));
         case "/send-message":
-          return Response.json(handleSendMessage(body as SendMessageRequest));
+          return Response.json(handleSendMessage(parseSendMessageRequest(body)));
         case "/poll-messages":
-          return Response.json(handlePollMessages(body as PollMessagesRequest));
+          return Response.json(handlePollMessages(parsePollMessagesRequest(body)));
         case "/unregister":
-          handleUnregister(body as { id: string });
+          handleUnregister(parseUnregisterRequest(body));
           return Response.json({ ok: true });
         default:
           return Response.json({ error: "not found" }, { status: 404 });
       }
     } catch (e) {
+      if (e instanceof ValidationError) {
+        return Response.json({ error: e.message }, { status: e.status });
+      }
       const msg = e instanceof Error ? e.message : String(e);
       return Response.json({ error: msg }, { status: 500 });
     }
   },
 });
 
-console.error(`[claude-peers broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH})`);
+console.error(
+  `[claude-peers broker] listening on 127.0.0.1:${PORT} (db: ${DB_PATH}, auth header: ${AUTH_HEADER})`
+);

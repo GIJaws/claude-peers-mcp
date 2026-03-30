@@ -18,7 +18,10 @@ Let your Claude Code instances find each other and talk. When you're running 5 s
 ### 1. Install
 
 ```bash
-git clone https://github.com/louislva/claude-peers-mcp.git ~/claude-peers-mcp   # or wherever you like
+export BUN_VERSION=1.2.21
+curl -fsSL https://bun.sh/install | bash -s -- bun-v${BUN_VERSION}
+
+git clone https://github.com/GIJaws/claude-peers-mcp.git ~/claude-peers-mcp   # or wherever you like
 cd ~/claude-peers-mcp
 bun install
 ```
@@ -28,7 +31,10 @@ bun install
 This makes claude-peers available in every Claude Code session, from any directory:
 
 ```bash
-claude mcp add --scope user --transport stdio claude-peers -- bun ~/claude-peers-mcp/server.ts
+export CLAUDE_PEERS_TOKEN="$(openssl rand -hex 32)"
+claude mcp add --scope user --transport stdio \
+  -e CLAUDE_PEERS_TOKEN="$CLAUDE_PEERS_TOKEN" \
+  claude-peers -- bun ~/claude-peers-mcp/server.ts
 ```
 
 Replace `~/claude-peers-mcp` with wherever you cloned it.
@@ -36,7 +42,7 @@ Replace `~/claude-peers-mcp` with wherever you cloned it.
 ### 3. Run Claude Code with the channel
 
 ```bash
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:claude-peers
+claude --dangerously-load-development-channels server:claude-peers
 ```
 
 That's it. The broker daemon starts automatically the first time.
@@ -72,6 +78,8 @@ The other Claude receives it immediately and responds.
 
 A **broker daemon** runs on `localhost:7899` with a SQLite database. Each Claude Code session spawns an MCP server that registers with the broker and polls for messages every second. Inbound messages are pushed into the session via the [claude/channel](https://code.claude.com/docs/en/channels-reference) protocol, so Claude sees them immediately.
 
+All broker POST endpoints require an auth header (`x-claude-peers-token`) using `CLAUDE_PEERS_TOKEN`.
+
 ```
                     ┌───────────────────────────┐
                     │  broker daemon            │
@@ -88,7 +96,7 @@ The broker auto-launches when the first session starts. It cleans up dead peers 
 
 ## Auto-summary
 
-If you set `OPENAI_API_KEY` in your environment, each instance generates a brief summary on startup using `gpt-5.4-nano` (costs fractions of a cent). The summary describes what you're likely working on based on your directory, git branch, and recent files. Other instances see this when they call `list_peers`.
+If you set `OPENAI_API_KEY` **and** `CLAUDE_PEERS_ENABLE_AUTOSUMMARY=1` in your environment, each instance generates a brief summary on startup using `gpt-5.4-nano` (costs fractions of a cent). The summary describes what you're likely working on based on your directory, git branch, and recent files. Other instances see this when they call `list_peers`.
 
 Without the API key, Claude sets its own summary via the `set_summary` tool.
 
@@ -101,7 +109,7 @@ cd ~/claude-peers-mcp
 
 bun cli.ts status            # broker status + all peers
 bun cli.ts peers             # list peers
-bun cli.ts send <id> <msg>   # send a message into a Claude session
+bun cli.ts send <from-id> <to-id> <msg>  # send a message from one peer to another
 bun cli.ts kill-broker       # stop the broker
 ```
 
@@ -111,7 +119,12 @@ bun cli.ts kill-broker       # stop the broker
 | -------------------- | -------------------- | ------------------------------------- |
 | `CLAUDE_PEERS_PORT`  | `7899`               | Broker port                           |
 | `CLAUDE_PEERS_DB`    | `~/.claude-peers.db` | SQLite database path                  |
-| `OPENAI_API_KEY`     | —                    | Enables auto-summary via gpt-5.4-nano |
+| `CLAUDE_PEERS_TOKEN` | — (required)         | Shared auth token for broker requests |
+| `CLAUDE_PEERS_MAX_UNDELIVERED_PER_PEER` | `200` | Queue cap per target peer |
+| `CLAUDE_PEERS_DELIVERED_RETENTION_HOURS` | `72` | Retention window for delivered messages |
+| `CLAUDE_PEERS_STALE_UNDELIVERED_RETENTION_HOURS` | `168` | Retention window for stale undelivered messages |
+| `CLAUDE_PEERS_ENABLE_AUTOSUMMARY` | `0` | Enable OpenAI-based auto-summary when set to `1` |
+| `OPENAI_API_KEY`     | —                    | Used only when auto-summary is enabled |
 
 ## Requirements
 
