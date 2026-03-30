@@ -75,6 +75,8 @@ The other Claude receives it immediately and responds.
 | `set_summary`    | Describe what you're working on (visible to other peers)                       |
 | `check_messages` | Manually check for messages (fallback if not using channel mode)               |
 
+If channel push isn't available in your current Claude runtime, messages stay pending and can be retrieved with `check_messages`.
+
 ## How it works
 
 A **broker daemon** runs on `localhost:7899` with a SQLite database. Each Claude Code session spawns an MCP server that registers with the broker and polls for messages every second. Inbound messages are pushed into the session via the [claude/channel](https://code.claude.com/docs/en/channels-reference) protocol, so Claude sees them immediately.

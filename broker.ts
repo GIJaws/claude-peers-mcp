@@ -20,6 +20,7 @@ import type {
   SendMessageRequest,
   PollMessagesRequest,
   PollMessagesResponse,
+  AckMessagesRequest,
   Peer,
   Message,
 } from "./shared/types.ts";
@@ -201,10 +202,6 @@ const selectUndelivered = db.prepare(`
   SELECT * FROM messages WHERE to_id = ? AND delivered = 0 ORDER BY sent_at ASC
 `);
 
-const markDelivered = db.prepare(`
-  UPDATE messages SET delivered = 1 WHERE id = ?
-`);
-
 // --- Generate peer ID ---
 
 function generateId(): string {
@@ -312,6 +309,24 @@ function parseUnregisterRequest(body: unknown): { id: string } {
   return { id: requirePeerId(body.id, "id") };
 }
 
+function parseAckMessagesRequest(body: unknown): AckMessagesRequest {
+  if (!isRecord(body)) {
+    throw new ValidationError("Request body must be a JSON object");
+  }
+  const id = requirePeerId(body.id, "id");
+  const messageIds = body.message_ids;
+  if (!Array.isArray(messageIds)) {
+    throw new ValidationError("message_ids must be an array");
+  }
+  const parsed = messageIds.map((value, idx) => {
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+      throw new ValidationError(`message_ids[${idx}] must be a positive integer`);
+    }
+    return value;
+  });
+  return { id, message_ids: parsed };
+}
+
 function handleRegister(body: RegisterRequest): RegisterResponse {
   const id = generateId();
   const now = new Date().toISOString();
@@ -415,13 +430,14 @@ function handleSendMessage(body: SendMessageRequest): { ok: boolean; error?: str
 
 function handlePollMessages(body: PollMessagesRequest): PollMessagesResponse {
   const messages = selectUndelivered.all(body.id) as Message[];
-
-  // Mark them as delivered
-  for (const msg of messages) {
-    markDelivered.run(msg.id);
-  }
-
   return { messages };
+}
+
+function handleAckMessages(body: AckMessagesRequest): void {
+  for (const messageId of body.message_ids) {
+    // Only acknowledge messages for this peer ID.
+    db.run("UPDATE messages SET delivered = 1 WHERE id = ? AND to_id = ?", [messageId, body.id]);
+  }
 }
 
 function handleUnregister(body: { id: string }): void {
@@ -485,6 +501,9 @@ Bun.serve({
           }
         case "/poll-messages":
           return Response.json(handlePollMessages(parsePollMessagesRequest(body)));
+        case "/ack-messages":
+          handleAckMessages(parseAckMessagesRequest(body));
+          return Response.json({ ok: true });
         case "/unregister":
           handleUnregister(parseUnregisterRequest(body));
           return Response.json({ ok: true });

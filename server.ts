@@ -64,6 +64,16 @@ async function brokerFetch<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function acknowledgeMessages(peerId: string, messageIds: number[]): Promise<void> {
+  if (messageIds.length === 0) {
+    return;
+  }
+  await brokerFetch("/ack-messages", {
+    id: peerId,
+    message_ids: messageIds,
+  });
+}
+
 async function isBrokerAlive(): Promise<boolean> {
   try {
     const res = await fetch(`${BROKER_URL}/health`, { signal: AbortSignal.timeout(2000) });
@@ -435,6 +445,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             content: [{ type: "text" as const, text: "No new messages." }],
           };
         }
+        const messageIds = result.messages.map((m) => m.id);
+        await acknowledgeMessages(myId, messageIds);
         const lines = result.messages.map(
           (m) => `From ${m.from_id} (${m.sent_at}):\n${m.text}`
         );
@@ -472,6 +484,8 @@ async function pollAndPushMessages() {
   try {
     const result = await brokerFetch<PollMessagesResponse>("/poll-messages", { id: myId });
 
+    const deliveredIds: number[] = [];
+
     for (const msg of result.messages) {
       // Look up the sender's info for context
       let fromSummary = "";
@@ -493,22 +507,35 @@ async function pollAndPushMessages() {
         // Non-critical, proceed without sender info
       }
 
-      // Push as channel notification — this is what makes it immediate
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: msg.text,
-          meta: {
-            from_id: msg.from_id,
-            from_name: fromName,
-            from_summary: fromSummary,
-            from_cwd: fromCwd,
-            sent_at: msg.sent_at,
+      try {
+        // Push as channel notification — this is what makes it immediate
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: msg.text,
+            meta: {
+              from_id: msg.from_id,
+              from_name: fromName,
+              from_summary: fromSummary,
+              from_cwd: fromCwd,
+              sent_at: msg.sent_at,
+            },
           },
-        },
-      });
+        });
 
-      log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
+        deliveredIds.push(msg.id);
+        log(`Pushed message from ${msg.from_id}: ${msg.text.slice(0, 80)}`);
+      } catch (pushError) {
+        log(
+          `Push failed for message ${msg.id}; leaving pending for check_messages: ${
+            pushError instanceof Error ? pushError.message : String(pushError)
+          }`
+        );
+      }
+    }
+
+    if (deliveredIds.length > 0) {
+      await acknowledgeMessages(myId, deliveredIds);
     }
   } catch (e) {
     // Broker might be down temporarily, don't crash
