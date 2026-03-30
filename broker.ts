@@ -428,7 +428,13 @@ Bun.serve({
         case "/list-peers":
           return Response.json(handleListPeers(parseListPeersRequest(body)));
         case "/send-message":
-          return Response.json(handleSendMessage(parseSendMessageRequest(body)));
+          {
+            const result = handleSendMessage(parseSendMessageRequest(body));
+            if (!result.ok) {
+              return Response.json(result, { status: 400 });
+            }
+            return Response.json(result);
+          }
         case "/poll-messages":
           return Response.json(handlePollMessages(parsePollMessagesRequest(body)));
         case "/unregister":
