@@ -70,6 +70,7 @@ The other Claude receives it immediately and responds.
 | Tool             | What it does                                                                   |
 | ---------------- | ------------------------------------------------------------------------------ |
 | `list_peers`     | Find other Claude Code instances — scoped to `machine`, `directory`, or `repo` |
+| `whoami`         | Show your own peer identity (ID/name/cwd/repo)                                 |
 | `send_message`   | Send a message to another instance by ID (arrives instantly via channel push)  |
 | `set_name`       | Set a short display name so peers are easy to identify                         |
 | `set_summary`    | Describe what you're working on (visible to other peers)                       |

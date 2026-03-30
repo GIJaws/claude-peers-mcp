@@ -162,6 +162,8 @@ let myId: PeerId | null = null;
 let myCwd = process.cwd();
 let myGitRoot: string | null = null;
 let myDisplayName = INITIAL_DISPLAY_NAME;
+let myTty: string | null = null;
+let mySummary = "";
 
 function defaultNameFromCwd(cwd: string): string {
   const clean = cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
@@ -187,12 +189,13 @@ Read the from_id, from_name, from_summary, and from_cwd attributes to understand
 
 Available tools:
 - list_peers: Discover other Claude Code instances (scope: machine/directory/repo)
+- whoami: Get your own peer identity (ID/name/cwd/repo) so you know who you are
 - send_message: Send a message to another instance by ID
 - set_name: Set a short display name so humans can recognize this peer quickly
 - set_summary: Set a 1-2 sentence summary of what you're working on (visible to other peers)
 - check_messages: Manually check for new messages
 
-When you start, proactively call set_summary to describe what you're working on. This helps other instances understand your context.`,
+When you start, call whoami first so you know your own peer ID, then proactively call set_summary to describe what you're working on.`,
   }
 );
 
@@ -214,6 +217,15 @@ const TOOLS = [
         },
       },
       required: ["scope"],
+    },
+  },
+  {
+    name: "whoami",
+    description:
+      "Return this peer's own identity and context (peer ID, display name, cwd, repo, tty, summary).",
+    inputSchema: {
+      type: "object" as const,
+      properties: {},
     },
   },
   {
@@ -378,6 +390,26 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case "whoami": {
+      if (!myId) {
+        return {
+          content: [{ type: "text" as const, text: "Not registered with broker yet" }],
+          isError: true,
+        };
+      }
+      const lines = [
+        `ID: ${myId}`,
+        `Name: ${myDisplayName || "(unnamed)"}`,
+        `CWD: ${myCwd}`,
+      ];
+      if (myGitRoot) lines.push(`Repo: ${myGitRoot}`);
+      if (myTty) lines.push(`TTY: ${myTty}`);
+      if (mySummary) lines.push(`Summary: ${mySummary}`);
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      };
+    }
+
     case "set_summary": {
       const { summary } = args as { summary: string };
       if (!myId) {
@@ -388,6 +420,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         await brokerFetch("/set-summary", { id: myId, summary });
+        mySummary = summary;
         return {
           content: [{ type: "text" as const, text: `Summary updated: "${summary}"` }],
         };
@@ -556,6 +589,7 @@ async function main() {
     myDisplayName = defaultNameFromCwd(myCwd);
   }
   const tty = getTty();
+  myTty = tty;
 
   log(`CWD: ${myCwd}`);
   log(`Display name: ${myDisplayName || "(unnamed)"}`);
@@ -601,6 +635,7 @@ async function main() {
     summary: initialSummary,
   });
   myId = reg.id;
+  mySummary = initialSummary;
   log(`Registered as peer ${myId}`);
 
   // If summary generation is still running, update it when done
