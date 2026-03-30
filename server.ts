@@ -43,6 +43,7 @@ const ENABLE_AUTOSUMMARY = process.env.CLAUDE_PEERS_ENABLE_AUTOSUMMARY === "1";
 const POLL_INTERVAL_MS = 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const BROKER_SCRIPT = new URL("./broker.ts", import.meta.url).pathname;
+const BUN_BIN = process.execPath || "bun";
 
 // --- Broker communication ---
 
@@ -78,7 +79,7 @@ async function ensureBroker(): Promise<void> {
   }
 
   log("Starting broker daemon...");
-  const proc = Bun.spawn(["bun", BROKER_SCRIPT], {
+  const proc = Bun.spawn([BUN_BIN, BROKER_SCRIPT], {
     env: {
       ...process.env,
       CLAUDE_PEERS_TOKEN: BROKER_TOKEN,
