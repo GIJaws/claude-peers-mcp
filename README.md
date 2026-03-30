@@ -18,7 +18,7 @@ Let your Claude Code instances find each other and talk. When you're running 5 s
 ### 1. Install
 
 ```bash
-export BUN_VERSION=1.2.21
+export BUN_VERSION=1.3.11
 curl -fsSL https://bun.sh/install | bash -s -- bun-v${BUN_VERSION}
 
 git clone https://github.com/GIJaws/claude-peers-mcp.git ~/claude-peers-mcp   # or wherever you like
